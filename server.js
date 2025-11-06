@@ -5,73 +5,92 @@ const socketIo = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 
-// --- This is the critical part ---
-// We must allow connections from your 'register.lk' website
 const io = socketIo(server, {
   cors: {
-    origin: "*", // You can replace "*" with your http://your-domain.lk
+    origin: "*", // Allows all origins
     methods: ["GET", "POST"]
   }
 });
-// ---------------------------------
 
-// Serve a simple page just to check if the server is working
 app.get('/', (req, res) => {
-  res.send('Your Buzzer Game Server is running!');
+  res.send('Buzzer Game Server is live! (v2 with Dynamic Teams)');
 });
 
-// --- Game Logic ---
+// --- New Dynamic Game Logic ---
 let buzzerLocked = false;
-let scores = {
-  "Team A": 0,
-  "Team B": 0,
-  "Team C": 0
-};
-let lastBuzzerWinner = null; // To keep track of who to give points to
+let lastBuzzerWinner = null;
+let currentScores = {}; // Scores are now a dynamic object
+let currentTeams = []; // The list of team names
 
-// --- Real-time Magic ---
+// --- Real-time Communication ---
 io.on('connection', (socket) => {
   console.log('A user connected: ', socket.id);
 
-  // Send the current scores to the user who just connected
-  socket.emit('score-update', scores);
+  // Send the current game state to the person who just connected
+  socket.emit('game-updated', {
+    teams: currentTeams,
+    scores: currentScores
+  });
+
+  // NEW: Listen for the admin creating a new game
+  socket.on('start-game', (newTeams) => {
+    console.log('Starting new game with teams:', newTeams);
+    currentTeams = newTeams; // e.g., ['Red', 'Blue']
+    currentScores = {}; // Reset scores
+    
+    // Create the new score object
+    currentTeams.forEach(team => {
+      currentScores[team] = 0;
+    });
+
+    buzzerLocked = false;
+    lastBuzzerWinner = null;
+
+    // Send the new game state to EVERYONE
+    io.emit('game-updated', {
+      teams: currentTeams,
+      scores: currentScores
+    });
+    
+    // Also reset the buzzers
+    io.emit('reset');
+  });
 
   // Listen for a student pressing the buzzer
   socket.on('buzz', (student) => {
-    // Check if the buzzer is already locked
     if (!buzzerLocked) {
-      // 1. Lock the buzzer immediately
       buzzerLocked = true;
-      lastBuzzerWinner = student; // Save who buzzed
-      
-      // 2. Announce the winner to the ADMIN panel
-      console.log(`Buzzer pressed by: ${student.name}`);
-      io.emit('buzz-winner', student); // Sends to ALL clients (admin will pick it up)
+      lastBuzzerWinner = student;
+      io.emit('buzz-winner', student);
     }
   });
 
   // Listen for the admin resetting the buzzer
   socket.on('reset-buzzer', () => {
-    buzzerLocked = false; // Unlock the buzzer
-    lastBuzzerWinner = null; // Clear the last winner
-    io.emit('reset'); // Tell all students to re-enable their buttons
+    buzzerLocked = false;
+    lastBuzzerWinner = null;
+    io.emit('reset');
     console.log('Buzzer has been reset');
   });
 
-  // Listen for admin score commands
+  // Listen for admin scoring
   socket.on('update-score', (command) => {
     if (lastBuzzerWinner) {
       const team = lastBuzzerWinner.team;
-      if (team && scores.hasOwnProperty(team)) {
+      // Check if the team exists in our dynamic object
+      if (team && currentScores.hasOwnProperty(team)) {
         if (command === 'correct') {
-          scores[team] += 10;
+          currentScores[team] += 10;
         } else if (command === 'wrong') {
-          scores[team] -= 10;
+          currentScores[team] -= 10;
         }
       }
     }
-    // Send the updated scores to everyone (admin and all students)
-    io.emit('score-update', scores);
+    // Send the updated scores to everyone
+    io.emit('game-updated', {
+      teams: currentTeams,
+      scores: currentScores
+    });
   });
 
   socket.on('disconnect', () => {
@@ -79,7 +98,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Start the server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
